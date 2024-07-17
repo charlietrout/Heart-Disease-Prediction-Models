@@ -1,0 +1,257 @@
+---
+title: "Charlie Armentrout ST 558 Homework 5"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Task 1 - Conceptual Questions
+
+1.  What is the purpose of using cross-validation when fitting a random forest model? \> The purpose of using cross-validation when fitting a random forest model is to assess its performance and generalizability by repeatedly training and evaluating the model on different subsets of the data. This helps in estimating how well the model will perform on new data that has not been seen before and aids in tuning its parameters to improve predictive accuracy without overfitting to the training data.
+
+2.  Describe the bagged tree algorithm. \> The bagged tree algorithm involves creating multiple bootstrap samples from the original dataset which are samples with replacement. The bootstrap samples must be the same size as the original dataset. With each bootstrap sample, you find a bootstrap statistic and then average this statistic out with all the other bootstrap statistics from the other bootstrap samples. This would be averaging for regression or what class has the most votes in classification as the final prediction.
+
+3.  What is meant by a general linear model? \> A general linear model is a linear model that has a continuous response and allows for both continuous and categorical predictors.
+
+4.  When fitting a multiple linear regression model, what does adding an interaction term do? That is, what does it allow the model to do differently as compared to when it is not included in the model? \> Adding an interaction term in a multiple linear regression model allows the model to account for how the relationship between one predictor and the dependent variable changes with different levels of another predictor. Without interaction terms, the model assumes that each predictor's effect on the outcome is independent of the others.
+
+5.  Why do we split our data into a training and test set? \> We split our data into a training set and a test set to evaluate the performance of a machine learning model. The training set is used to train the model, adjusting its parameters to fit the data. The test set serves as an independent dataset to assess how well the trained model generalizes to new and not before seen data. This practice helps in detecting overfitting, where a model performs well on the training data but poorly on new data, and allows for tuning the model's hyperparameters to ensure its reliability and effectiveness with new data.
+
+# Task 2: Fitting Models
+
+```{r setup, include=FALSE}
+library(knitr)
+# Set options to show messages and warnings
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+## Quick EDA/Data Preparation
+
+1.  Some basic EDA and data prep to delete bad observations before running models and checking performance
+```{r}
+# Load in required packages
+library(caret)
+library(dplyr)
+library(readr)
+heart_data <- read_csv("heart.csv")
+# Quick data exploration and preparation
+summary(heart_data)
+# Check the structure of the dataset
+str(heart_data)
+# Check for missing values
+any(is.na(heart_data))  
+# Correlation matrix for numeric variables
+cor_matrix <- cor(select_if(heart_data, is.numeric))
+print(cor_matrix)
+# Filter numeric variables
+numeric_vars <- select_if(heart_data, is.numeric)
+ 
+# Group by HeartDisease and compute mean and standard deviation
+summary_stats <- numeric_vars |>
+     group_by(HeartDisease) |>
+     summarise_all(list(mean = mean, sd = sd))
+# Print summary statistics
+print(summary_stats)
+
+# Drops all obs where Cholesterol = 0 or RestingBP = 0 as this can affect models later on if these predictors are used
+heart_data <- heart_data[heart_data$Cholesterol != 0 & heart_data$RestingBP != 0, ]
+```
+2. Turn HeartDisease Variable into factor so tree and logistic regression models can run properly and drop ST_Slope variable as it is irrelevant
+```{r}
+# Create a factor version of HeartDisease variable
+heart_data$HeartDisease <- as.factor(heart_data$HeartDisease)
+# Remove ST_Slope variable
+heart_data <- select(heart_data, -ST_Slope)
+```
+3.  Creation of dummy variables here is so kNN model can run properly as kNN needs all numeric predictors generally
+```{r}
+# Select only the categorical predictors
+categorical_vars <- select(heart_data, Sex, ExerciseAngina, ChestPainType, RestingECG)
+
+# Create dummy variables using dummyVars from caret
+dummy_formula <- "~ ."
+
+# ~ . specifies that all columns in the data here should be transformed into dummy variables
+dummy_data <- dummyVars(dummy_formula, data = categorical_vars)
+
+# Apply the transformation to create dummy variables
+dummy_transformed <- predict(dummy_data, newdata = categorical_vars)
+
+# Add the dummy variables to the original dataset
+heart_data <- cbind(heart_data, dummy_transformed)
+
+# Remove the original categorical variables from the dataset
+heart_data <- select(heart_data, -Sex, -ExerciseAngina, -ChestPainType, -RestingECG)
+
+# Verifying the changes
+str(heart_data)
+```
+## Split your Data
+Basic training set and test set split to prep for model testing
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Split data into training (70%) and test (30%) sets
+train_indices <- createDataPartition(heart_data$HeartDisease, p = 0.7, list = FALSE)
+train_data <- heart_data[train_indices, ]
+test_data <- heart_data[-train_indices, ]
+
+# Check the dimensions of the training and test sets making sure rows add up to 918
+dim(train_data)
+dim(test_data)
+```
+## kNN
+Running and eval of kNN model
+```{r}
+# Fit kNN model using only numeric predictors
+knn_fit <- train(
+  HeartDisease ~ .,
+  data = train_data,
+  method = "knn",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+  tuneGrid = expand.grid(k = 1:40)
+)
+
+# Print best model parameters
+print(knn_fit)
+
+# Evaluate on test set using only numeric predictors
+knn_pred <- predict(knn_fit, newdata = test_data)
+confusionMatrix(knn_pred, test_data$HeartDisease)
+
+cm_knn <- confusionMatrix(knn_pred, test_data$HeartDisease)
+print(cm_knn)
+```
+## Logistic Regression
+Running and eval of various logistic regression model
+```{r}
+#Resetting the heart_data dataset back to its original state with no dummy variables first
+heart_data <- read_csv("heart.csv")
+heart_data <- heart_data[heart_data$Cholesterol != 0 & heart_data$RestingBP != 0, ]
+# Create a factor version of HeartDisease variable
+heart_data$HeartDisease <- as.factor(heart_data$HeartDisease)
+# Remove ST_Slope variable
+heart_data <- select(heart_data, -ST_Slope)
+# Set seed for reproducibility
+set.seed(123)
+
+# Split data into training (70%) and test (30%) sets
+train_indices <- createDataPartition(heart_data$HeartDisease, p = 0.7, list = FALSE)
+train_data <- heart_data[train_indices, ]
+test_data <- heart_data[-train_indices, ]
+# Fit logistic regression models
+model1 <- train(
+  HeartDisease ~ .,
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+)
+
+model2 <- train(
+  HeartDisease ~ Age + Sex + RestingBP + MaxHR,
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+)
+
+model3 <- train(
+  HeartDisease ~ Age * Sex * RestingBP * MaxHR,
+  data = train_data,
+  method = "glm",
+  family = binomial,
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3)
+)
+
+# Print model summaries
+print(model1)
+print(model2)
+print(model3)
+
+# Evaluate model 1 on test set
+pred_model1 <- predict(model1, newdata = test_data)
+
+
+# Confusion matrix for model 1, the best one
+cm_model1 <- confusionMatrix(pred_model1, test_data$HeartDisease)
+
+# Print confusion matrix of model 1
+print(cm_model1)
+```
+## Tree Models
+Running and eval of various tree models
+```{r}
+# Fit classification tree model
+tree_model <- train(
+  HeartDisease ~ .,
+  data = train_data,
+  method = "rpart",
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+  tuneGrid = expand.grid(cp = seq(0, 0.1, by = 0.001))
+)
+
+# Print best model parameters
+print(tree_model)
+
+# Evaluate on test set
+tree_pred <- predict(tree_model, newdata = test_data)
+cm_tree <- confusionMatrix(tree_pred, test_data$HeartDisease)
+print(cm_tree)
+
+# Fit random forest model
+rf_model <- train(
+  HeartDisease ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+  tuneGrid = expand.grid(mtry = 1:ncol(train_data) - 1)  # Try values from 1 to number of predictors
+)
+
+# Print best model parameters
+print(rf_model)
+
+# Evaluate on test set
+rf_pred <- predict(rf_model, newdata = test_data)
+cm_rf <- confusionMatrix(rf_pred, test_data$HeartDisease)
+print(cm_rf)
+
+# Fit boosted tree model
+gbm_grid <- expand.grid(
+  n.trees = c(25, 50, 100, 200),
+  interaction.depth = c(1, 2, 3),
+  shrinkage = 0.1,
+  n.minobsinnode = 10
+)
+
+gbm_model <- train(
+  HeartDisease ~ .,
+  data = train_data,
+  method = "gbm",
+  trControl = trainControl(method = "repeatedcv", number = 10, repeats = 3),
+  tuneGrid = gbm_grid,
+  verbose = FALSE
+)
+
+# Print best model parameters
+print(gbm_model)
+
+# Evaluate on test set
+gbm_pred <- predict(gbm_model, newdata = test_data)
+cm_gbm <- confusionMatrix(gbm_pred, test_data$HeartDisease)
+print(cm_gbm)
+```
+## Wrap Up
+Comparison of overall accuracies from confusion matrices of kNN model, top logistic regression model and the 3 tree models
+```{r}
+# Print overall model accuracies
+print("Model Accuracies:")
+print(paste("kNN:", round(cm_knn$overall['Accuracy'], 4),
+            "Logistic Regression:", round(cm_model1$overall['Accuracy'], 4),
+            "Classification Tree:", round(cm_tree$overall['Accuracy'], 4),
+            "Random Forest:", round(cm_rf$overall['Accuracy'], 4),
+            "Boosted Tree:", round(cm_gbm$overall['Accuracy'], 4)))
+```
+The model that did the best job in terms of accuracy on the test set was the boosted tree model
